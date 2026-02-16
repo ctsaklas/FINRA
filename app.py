@@ -20,8 +20,6 @@ st.markdown("""
 
 # --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Parameters")
-
-# DATA SOURCE STATUS INDICATOR
 st.sidebar.info("📡 **Data Source:** FINRA Aggregated (All TRFs)")
 
 today = datetime.now()
@@ -38,7 +36,6 @@ vol_threshold = st.sidebar.number_input(
 
 @st.cache_data(ttl=3600)
 def fetch_finra_data(date_str):
-    """Fetches Aggregated FINRA data (All TRFs) and adds a Date column."""
     url = f"https://cdn.finra.org/equity/regsho/daily/FNYRAshvol{date_str}.txt"
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
@@ -47,7 +44,8 @@ def fetch_finra_data(date_str):
             df = df.dropna(subset=['Symbol'])
             df['ShortVolume'] = pd.to_numeric(df['ShortVolume'], errors='coerce').fillna(0)
             df['TotalVolume'] = pd.to_numeric(df['TotalVolume'], errors='coerce').fillna(0)
-            df['Date'] = pd.to_datetime(date_str, format='%Y%m%d')
+            # FIX: Convert string to datetime, then to a clean string format for Plotly categories
+            df['Date'] = pd.to_datetime(date_str, format='%Y%m%d').strftime('%Y-%m-%d')
             return df[['Date', 'Symbol', 'ShortVolume', 'TotalVolume']]
     except: return None
     return None
@@ -72,7 +70,6 @@ if len(date_range) == 2:
             full_data = pd.concat(all_dfs)
             st.session_state['full_data'] = full_data
             
-            # Consolidated Aggregation
             agg = full_data.groupby('Symbol').agg({'ShortVolume':'sum', 'TotalVolume':'sum'}).reset_index()
             agg = agg[agg['TotalVolume'] >= vol_threshold]
             agg['Buy Vol'] = agg['ShortVolume']
@@ -93,20 +90,13 @@ if len(date_range) == 2:
         with col1:
             st.subheader("🔥 Top 15 Buying Volume (>60%)")
             buy_list = agg[agg['BuyPct'] > 0.60].sort_values('Buy Vol', ascending=False).head(15)
-            st.data_editor(
-                buy_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}),
-                hide_index=True, key="buy_table"
-            )
+            st.data_editor(buy_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}), hide_index=True, key="buy_table")
             
         with col2:
             st.subheader("📉 Top 15 Selling Volume (>60%)")
             sell_list = agg[agg['SellPct'] > 0.60].sort_values('Sell Vol', ascending=False).head(15)
-            st.data_editor(
-                sell_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}),
-                hide_index=True, key="sell_table"
-            )
+            st.data_editor(sell_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}), hide_index=True, key="sell_table")
 
-        # Symbol Selection
         selected_symbol = st.selectbox("Select a Symbol to Chart Details:", options=sorted(agg['Symbol'].unique()))
 
         if selected_symbol:
@@ -118,31 +108,22 @@ if len(date_range) == 2:
             st.divider()
             st.subheader(f"Detailed Analysis: {selected_symbol}")
             
-            # PRIMARY CHART
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy'], name="Buying", marker_color='green'))
             fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell'], name="Selling", marker_color='red'))
-            fig.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Ratio'], name="Buy/Sell Trend", line=dict(color='orange', width=3)), secondary_y=True)
+            fig.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Ratio'], name="Buy/Sell Ratio Trend", line=dict(color='orange', width=3)), secondary_y=True)
             
-            fig.update_layout(barmode='group', height=500, xaxis_title="Trading Date", yaxis_title="Volume", hovermode="x unified")
-            fig.update_xaxes(type='date', tickformat='%Y-%m-%d')
+            fig.update_layout(
+                barmode='group', 
+                height=600, 
+                xaxis_title="Trading Date", 
+                yaxis_title="Volume", 
+                hovermode="x unified"
+            )
+            
+            # FIX: Explicitly set axis to category to avoid Unix Epoch (1970) scaling
+            fig.update_xaxes(type='category', categoryorder='category ascending')
+            fig.update_yaxes(title_text="Volume (Shares)", secondary_y=False)
+            fig.update_yaxes(title_text="Buy/Sell Ratio", secondary_y=True)
+            
             st.plotly_chart(fig, use_container_width=True)
-
-            # TABBED OPTIONS
-            tab1, tab2 = st.tabs(["Option A: Cumulative Pressure", "Option B: Intensity Ratio (%)"])
-            
-            with tab1:
-                fig_a = go.Figure()
-                fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Buy'].cumsum(), fill='tozeroy', name="Cumul. Buying", line_color='green'))
-                fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Sell'].cumsum(), fill='tozeroy', name="Cumul. Selling", line_color='red'))
-                fig_a.update_layout(title="Cumulative Volume Buildup", height=400, xaxis_title="Trading Date")
-                st.plotly_chart(fig_a, use_container_width=True)
-
-            with tab2:
-                symbol_data['Buy%'] = (symbol_data['ShortVolume'] / symbol_data['TotalVolume']) * 100
-                symbol_data['Sell%'] = 100 - symbol_data['Buy%']
-                fig_b = go.Figure()
-                fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy%'], name="Buy %", marker_color='green'))
-                fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell%'], name="Sell %", marker_color='red'))
-                fig_b.update_layout(barmode='stack', title="Daily Percentage Intensity", height=400, xaxis_title="Trading Date", yaxis_title="Percentage (%)", yaxis=dict(range=[0, 100]))
-                st.plotly_chart(fig_b, use_container_width=True)
