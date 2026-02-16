@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # App Configuration
 st.set_page_config(page_title="Dark Pool Flow Analyzer", layout="wide")
 
-# RESTORED: Original Descriptive Text
+# --- ORIGINAL DESCRIPTIVE TEXT ---
 st.title("📊 Dark Pool Institutional Flow Analyzer")
 st.markdown("""
 **Methodology:**
@@ -18,13 +18,16 @@ st.markdown("""
 * **Consolidated Threshold:** Only symbols where Buy or Sell volume is >60% of the total range volume are displayed.
 """)
 
-# --- SIDEBAR SETTINGS ---
+# --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Parameters")
+
+# DATA SOURCE STATUS INDICATOR
+st.sidebar.info("📡 **Data Source:** FINRA Aggregated (All TRFs)")
+
 today = datetime.now()
 default_start = today - timedelta(days=15)
 date_range = st.sidebar.date_input("Select Date Range", value=(default_start, today), max_value=today)
 
-# Incremental feature: Dynamic Volume Filter
 vol_threshold = st.sidebar.number_input(
     "Minimum Total Volume Filter", 
     min_value=0, 
@@ -35,7 +38,8 @@ vol_threshold = st.sidebar.number_input(
 
 @st.cache_data(ttl=3600)
 def fetch_finra_data(date_str):
-    url = f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{date_str}.txt"
+    """Fetches Aggregated FINRA data (All TRFs) and adds a Date column."""
+    url = f"https://cdn.finra.org/equity/regsho/daily/FNYRAshvol{date_str}.txt"
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         if response.status_code == 200:
@@ -43,7 +47,7 @@ def fetch_finra_data(date_str):
             df = df.dropna(subset=['Symbol'])
             df['ShortVolume'] = pd.to_numeric(df['ShortVolume'], errors='coerce').fillna(0)
             df['TotalVolume'] = pd.to_numeric(df['TotalVolume'], errors='coerce').fillna(0)
-            df['Date'] = date_str
+            df['Date'] = pd.to_datetime(date_str, format='%Y%m%d')
             return df[['Date', 'Symbol', 'ShortVolume', 'TotalVolume']]
     except: return None
     return None
@@ -54,17 +58,21 @@ if len(date_range) == 2:
     if st.sidebar.button("Run Analysis"):
         all_dfs = []
         current_date = start_date
-        while current_date <= end_date:
+        days_diff = (end_date - start_date).days + 1
+        progress_bar = st.progress(0)
+        
+        for i in range(days_diff):
             if current_date.weekday() < 5:
                 df = fetch_finra_data(current_date.strftime("%Y%m%d"))
                 if df is not None: all_dfs.append(df)
             current_date += timedelta(days=1)
+            progress_bar.progress((i + 1) / days_diff)
         
         if all_dfs:
             full_data = pd.concat(all_dfs)
             st.session_state['full_data'] = full_data
             
-            # Aggregate for Table (Symbol, total volume, Buy Vol, Sell Vol, Buy/Sell Ratio)
+            # Consolidated Aggregation
             agg = full_data.groupby('Symbol').agg({'ShortVolume':'sum', 'TotalVolume':'sum'}).reset_index()
             agg = agg[agg['TotalVolume'] >= vol_threshold]
             agg['Buy Vol'] = agg['ShortVolume']
@@ -85,19 +93,24 @@ if len(date_range) == 2:
         with col1:
             st.subheader("🔥 Top 15 Buying Volume (>60%)")
             buy_list = agg[agg['BuyPct'] > 0.60].sort_values('Buy Vol', ascending=False).head(15)
-            st.data_editor(buy_list[display_cols], hide_index=True, key="buy_table")
+            st.data_editor(
+                buy_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}),
+                hide_index=True, key="buy_table"
+            )
             
         with col2:
             st.subheader("📉 Top 15 Selling Volume (>60%)")
             sell_list = agg[agg['SellPct'] > 0.60].sort_values('Sell Vol', ascending=False).head(15)
-            st.data_editor(sell_list[display_cols], hide_index=True, key="sell_table")
+            st.data_editor(
+                sell_list[display_cols].style.format({'Buy/Sell Ratio': '{:.2f}', 'TotalVolume': '{:,.0f}', 'Buy Vol': '{:,.0f}', 'Sell Vol': '{:,.0f}'}),
+                hide_index=True, key="sell_table"
+            )
 
         # Symbol Selection
-        selected_symbol = st.selectbox("Select a Symbol to Chart Details:", options=agg['Symbol'].unique())
+        selected_symbol = st.selectbox("Select a Symbol to Chart Details:", options=sorted(agg['Symbol'].unique()))
 
         if selected_symbol:
-            # Filter for trading days only
-            symbol_data = full_data[full_data['Symbol'] == selected_symbol].copy()
+            symbol_data = full_data[full_data['Symbol'] == selected_symbol].copy().sort_values('Date')
             symbol_data['Buy'] = symbol_data['ShortVolume']
             symbol_data['Sell'] = symbol_data['TotalVolume'] - symbol_data['ShortVolume']
             symbol_data['Ratio'] = (symbol_data['Buy'] / symbol_data['Sell'].replace(0, 0.0001)).replace([float('inf')], 100.0)
@@ -105,26 +118,24 @@ if len(date_range) == 2:
             st.divider()
             st.subheader(f"Detailed Analysis: {selected_symbol}")
             
-            # --- PRIMARY CHART: BAR (ABOVE 0) + TREND LINE ---
+            # PRIMARY CHART
             fig = make_subplots(specs=[[{"secondary_y": True}]])
-            # Bars for Buying (Green) and Selling (Red) - Side by Side
-            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy'], name="Buying (Short Vol)", marker_color='green'))
-            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell'], name="Selling (Long Vol)", marker_color='red'))
-            # Trend Line (Secondary Y)
+            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy'], name="Buying", marker_color='green'))
+            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell'], name="Selling", marker_color='red'))
             fig.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Ratio'], name="Buy/Sell Trend", line=dict(color='orange', width=3)), secondary_y=True)
             
-            fig.update_layout(title="Daily Volume (Trading Days Only)", barmode='group', height=500, xaxis_title="Trading Date", yaxis_title="Volume (Shares)")
-            fig.update_yaxes(title_text="Buy/Sell Ratio", secondary_y=True)
+            fig.update_layout(barmode='group', height=500, xaxis_title="Trading Date", yaxis_title="Volume", hovermode="x unified")
+            fig.update_xaxes(type='date', tickformat='%Y-%m-%d')
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- OPTION A & B TABS ---
+            # TABBED OPTIONS
             tab1, tab2 = st.tabs(["Option A: Cumulative Pressure", "Option B: Intensity Ratio (%)"])
             
             with tab1:
                 fig_a = go.Figure()
                 fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Buy'].cumsum(), fill='tozeroy', name="Cumul. Buying", line_color='green'))
                 fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Sell'].cumsum(), fill='tozeroy', name="Cumul. Selling", line_color='red'))
-                fig_a.update_layout(title="Cumulative Buying vs Selling Buildup", height=400, xaxis_title="Trading Date")
+                fig_a.update_layout(title="Cumulative Volume Buildup", height=400, xaxis_title="Trading Date")
                 st.plotly_chart(fig_a, use_container_width=True)
 
             with tab2:
@@ -133,5 +144,5 @@ if len(date_range) == 2:
                 fig_b = go.Figure()
                 fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy%'], name="Buy %", marker_color='green'))
                 fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell%'], name="Sell %", marker_color='red'))
-                fig_b.update_layout(barmode='stack', title="Daily Percentage Intensity", height=400, xaxis_title="Trading Date", yaxis_title="Percentage (%)")
+                fig_b.update_layout(barmode='stack', title="Daily Percentage Intensity", height=400, xaxis_title="Trading Date", yaxis_title="Percentage (%)", yaxis=dict(range=[0, 100]))
                 st.plotly_chart(fig_b, use_container_width=True)
