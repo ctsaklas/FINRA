@@ -28,7 +28,9 @@ def fetch_finra_data(date_str):
             df = df.dropna(subset=['Symbol'])
             df['ShortVolume'] = pd.to_numeric(df['ShortVolume'], errors='coerce').fillna(0)
             df['TotalVolume'] = pd.to_numeric(df['TotalVolume'], errors='coerce').fillna(0)
-            df['Date'] = date_str
+            
+            # FIX: Convert YYYYMMDD string to a proper Date object
+            df['Date'] = pd.to_datetime(date_str, format='%Y%m%d').strftime('%Y-%m-%d')
             return df[['Date', 'Symbol', 'ShortVolume', 'TotalVolume']]
     except: return None
     return None
@@ -40,6 +42,7 @@ if len(date_range) == 2:
         current_date = start_date
         while current_date <= end_date:
             if current_date.weekday() < 5:
+                # Format: 20260213
                 df = fetch_finra_data(current_date.strftime("%Y%m%d"))
                 if df is not None: all_dfs.append(df)
             current_date += timedelta(days=1)
@@ -53,7 +56,7 @@ if len(date_range) == 2:
             agg = agg[agg['TotalVolume'] >= vol_threshold]
             agg['Buy Vol'] = agg['ShortVolume']
             agg['Sell Vol'] = agg['TotalVolume'] - agg['ShortVolume']
-            agg['Buy/Sell Ratio'] = (agg['Buy Vol'] / agg['Sell Vol']).replace([float('inf')], 100.0).fillna(0)
+            agg['Buy/Sell Ratio'] = (agg['Buy Vol'] / agg['Sell Vol'].replace(0, 0.0001)).replace([float('inf')], 100.0).fillna(0)
             agg['BuyPct'] = agg['Buy Vol'] / agg['TotalVolume']
             agg['SellPct'] = agg['Sell Vol'] / agg['TotalVolume']
             
@@ -68,49 +71,42 @@ if len(date_range) == 2:
             st.subheader("🔥 Top Buying (>60%)")
             buy_list = agg[agg['BuyPct'] > 0.60].sort_values('Buy Vol', ascending=False).head(15)
             # Using Data Editor for selection
-            buy_edit = st.data_editor(buy_list[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
-                                     hide_index=True, key="buy_table", on_change=None)
+            st.data_editor(buy_list[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
+                                     hide_index=True, key="buy_table")
         with col2:
             st.subheader("📉 Top Selling (>60%)")
             sell_list = agg[agg['SellPct'] > 0.60].sort_values('Sell Vol', ascending=False).head(15)
-            sell_edit = st.data_editor(sell_list[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
+            st.data_editor(sell_list[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
                                       hide_index=True, key="sell_table")
 
         # Symbol Selection for Charting
-        selected_symbol = st.selectbox("Select a Symbol to Chart Details:", options=agg['Symbol'].unique())
+        selected_symbol = st.selectbox("Select a Symbol to Chart Details हि:", options=sorted(agg['Symbol'].unique()))
 
         if selected_symbol:
-            symbol_data = full_data[full_data['Symbol'] == selected_symbol].copy()
+            symbol_data = full_data[full_data['Symbol'] == selected_symbol].copy().sort_values('Date')
             symbol_data['Buy'] = symbol_data['ShortVolume']
-            symbol_data['Sell'] = (symbol_data['TotalVolume'] - symbol_data['ShortVolume']) * -1
-            symbol_data['Ratio'] = (symbol_data['ShortVolume'] / (symbol_data['TotalVolume'] - symbol_data['ShortVolume']).replace(0,1)).replace([float('inf')], 100.0)
+            # FIX: No negative multiplier here
+            symbol_data['Sell'] = symbol_data['TotalVolume'] - symbol_data['ShortVolume']
+            symbol_data['Ratio'] = (symbol_data['ShortVolume'] / symbol_data['Sell'].replace(0, 0.0001)).replace([float('inf')], 100.0)
 
             # --- PLOTLY: BAR CHART + TREND ---
             st.divider()
             st.subheader(f"Detailed Analysis: {selected_symbol}")
             
             fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy'], name="Buying", marker_color='green'))
-            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell'], name="Selling", marker_color='red'))
-            fig.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Ratio'], name="Buy/Sell Trend", line=dict(color='orange', width=3)), secondary_y=True)
-            fig.update_layout(title="Daily Buy/Sell Volume with Ratio Trend", barmode='relative', height=500)
-            st.plotly_chart(fig, use_container_width=True)
-
-            # --- OPTION A & B DISPLAY ---
-            tab1, tab2 = st.tabs(["Option A: Cumulative Pressure", "Option B: Intensity Ratio (%)"])
             
-            with tab1:
-                fig_a = go.Figure()
-                fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Buy'].cumsum(), fill='tozeroy', name="Cumul. Buying", line_color='green'))
-                fig_a.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Sell'].abs().cumsum(), fill='tozeroy', name="Cumul. Selling", line_color='red'))
-                fig_a.update_layout(title="Cumulative Buying vs Selling Buildup", height=400)
-                st.plotly_chart(fig_a, use_container_width=True)
-
-            with tab2:
-                symbol_data['Buy%'] = (symbol_data['ShortVolume'] / symbol_data['TotalVolume']) * 100
-                symbol_data['Sell%'] = 100 - symbol_data['Buy%']
-                fig_b = go.Figure()
-                fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy%'], name="Buy %", marker_color='green'))
-                fig_b.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell%'], name="Sell %", marker_color='red'))
-                fig_b.update_layout(barmode='stack', title="Daily Buy/Sell Percentage Intensity", height=400)
-                st.plotly_chart(fig_b, use_container_width=True)
+            # Buying (Green)
+            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Buy'], name="Buying", marker_color='green'))
+            # Selling (Red) - Positive values
+            fig.add_trace(go.Bar(x=symbol_data['Date'], y=symbol_data['Sell'], name="Selling", marker_color='red'))
+            
+            # Ratio Trend (Orange Line)
+            fig.add_trace(go.Scatter(x=symbol_data['Date'], y=symbol_data['Ratio'], name="Buy/Sell Trend", line=dict(color='orange', width=3)), secondary_y=True)
+            
+            # FIX: barmode='group' puts them side-by-side. Axis set to category to fix 1970 bug.
+            fig.update_layout(title="Daily Buy/Sell Volume with Ratio Trend", barmode='group', height=500, hovermode="x unified")
+            fig.update_xaxes(type='category')
+            fig.update_yaxes(title_text="Volume", secondary_y=False)
+            fig.update_yaxes(title_text="Buy/Sell Ratio", secondary_y=True)
+            
+            st.plotly_chart(fig, use_container_width=True)
