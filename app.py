@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Dark Pool Flow Analyzer", layout="wide")
 st.title("📊 Dark Pool Institutional Flow Analyzer")
 
-# --- ADDED: Dark Pool Explanation & Methodology ---
+# --- Dark Pool Explanation & Methodology ---
 st.markdown("""
 **What are Dark Pools?**
 Dark pools are private exchanges where institutional investors (banks, hedge funds) trade large blocks of shares anonymously. Unlike public "lit" exchanges (like the NYSE floor), trades here are not revealed to the market until *after* execution. This allows big players to enter or exit positions without immediately moving the stock price against themselves.
@@ -110,19 +110,30 @@ if len(date_range) == 2:
             
             # Aggregate for the Summary Table (Summing up the daily totals)
             agg = full_data.groupby('Symbol').agg({'ShortVolume':'sum', 'TotalVolume':'sum'}).reset_index()
-            agg = agg[agg['TotalVolume'] >= vol_threshold]
+            # Note: We keep the raw 'agg' for ETF filtering before applying the threshold
+            
+            # Apply Volume Filter for Top 15 lists
+            filtered_agg = agg[agg['TotalVolume'] >= vol_threshold].copy()
+            filtered_agg['Buy Vol'] = filtered_agg['ShortVolume']
+            filtered_agg['Sell Vol'] = filtered_agg['TotalVolume'] - filtered_agg['ShortVolume']
+            filtered_agg['Buy/Sell Ratio'] = (filtered_agg['Buy Vol'] / filtered_agg['Sell Vol'].replace(0, 0.0001)).replace([float('inf')], 100.0).fillna(0)
+            filtered_agg['BuyPct'] = filtered_agg['Buy Vol'] / filtered_agg['TotalVolume']
+            filtered_agg['SellPct'] = filtered_agg['Sell Vol'] / filtered_agg['TotalVolume']
+            
+            st.session_state['agg_data'] = filtered_agg
+            
+            # Calculate metrics for the FULL dataset (for ETFs that might be below threshold)
             agg['Buy Vol'] = agg['ShortVolume']
             agg['Sell Vol'] = agg['TotalVolume'] - agg['ShortVolume']
             agg['Buy/Sell Ratio'] = (agg['Buy Vol'] / agg['Sell Vol'].replace(0, 0.0001)).replace([float('inf')], 100.0).fillna(0)
-            agg['BuyPct'] = agg['Buy Vol'] / agg['TotalVolume']
-            agg['SellPct'] = agg['Sell Vol'] / agg['TotalVolume']
-            
-            st.session_state['agg_data'] = agg
+            st.session_state['raw_agg'] = agg
 
     if 'agg_data' in st.session_state:
         agg = st.session_state['agg_data']
+        raw_agg = st.session_state.get('raw_agg', agg)
         full_data = st.session_state['full_data']
 
+        # --- SECTION 1: TOP 15 BUY/SELL ---
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("🔥 Top Buying (>60%)")
@@ -135,6 +146,38 @@ if len(date_range) == 2:
             st.data_editor(sell_list[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
                                       hide_index=True, key="sell_table")
 
+        # --- SECTION 2: ETF TRACKER (NEW) ---
+        st.divider()
+        st.header("⚡ Leveraged & Inverse ETF Tracker")
+        
+        # ETF Watchlists
+        lev_symbols = ['SSO', 'QLD', 'UPRO', 'TQQQ']
+        inv_symbols = ['DOG', 'PSQ', 'SH', 'SDS', 'QID', 'SQQQ', 'SVIX']
+        
+        # Filter from RAW data (ignoring volume threshold to ensure they appear)
+        lev_data = raw_agg[raw_agg['Symbol'].isin(lev_symbols)].sort_values('Buy/Sell Ratio', ascending=False)
+        inv_data = raw_agg[raw_agg['Symbol'].isin(inv_symbols)].sort_values('Buy/Sell Ratio', ascending=False)
+        
+        col_etf1, col_etf2 = st.columns(2)
+        
+        with col_etf1:
+            st.subheader("🚀 Leveraged Long ETFs")
+            if not lev_data.empty:
+                st.data_editor(lev_data[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
+                             hide_index=True, key="lev_table")
+            else:
+                st.info("No data found for Leveraged ETFs in this range.")
+
+        with col_etf2:
+            st.subheader("🐻 Inverse/Short ETFs")
+            if not inv_data.empty:
+                st.data_editor(inv_data[['Symbol', 'TotalVolume', 'Buy Vol', 'Sell Vol', 'Buy/Sell Ratio']], 
+                             hide_index=True, key="inv_table")
+            else:
+                st.info("No data found for Inverse ETFs in this range.")
+
+        # --- SECTION 3: DETAILED CHARTING ---
+        st.divider()
         # Symbol Selection for Charting
         selected_symbol = st.selectbox("Select a Symbol to Chart Details:", options=sorted(agg['Symbol'].unique()))
 
@@ -145,7 +188,6 @@ if len(date_range) == 2:
             symbol_data['Ratio'] = (symbol_data['ShortVolume'] / symbol_data['Sell'].replace(0, 0.0001)).replace([float('inf')], 100.0)
 
             # --- PLOTLY: BAR CHART + TREND ---
-            st.divider()
             st.subheader(f"Detailed Analysis: {selected_symbol}")
             
             fig = make_subplots(specs=[[{"secondary_y": True}]])
