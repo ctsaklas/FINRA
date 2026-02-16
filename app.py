@@ -34,7 +34,7 @@ def fetch_daily_components(date_str):
     components = [
         f"CNMSshvol{date_str}.txt",   # ADF / Consolidated NMS
         f"FNYXshvol{date_str}.txt",   # NYSE TRF
-        f"FNQCshvol{date_str}.txt",   # Nasdaq TRF Carteret
+        f"FNSQshvol{date_str}.txt",   # Nasdaq TRF Carteret
         f"FNQChshvol{date_str}.txt"   # Nasdaq TRF Chicago
     ]
     
