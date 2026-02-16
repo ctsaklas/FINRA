@@ -9,7 +9,12 @@ from datetime import datetime, timedelta
 # App Configuration
 st.set_page_config(page_title="Dark Pool Flow Analyzer", layout="wide")
 st.title("📊 Dark Pool Institutional Flow Analyzer")
+
+# --- ADDED: Dark Pool Explanation & Methodology ---
 st.markdown("""
+**What are Dark Pools?**
+Dark pools are private exchanges where institutional investors (banks, hedge funds) trade large blocks of shares anonymously. Unlike public "lit" exchanges (like the NYSE floor), trades here are not revealed to the market until *after* execution. This allows big players to enter or exit positions without immediately moving the stock price against themselves.
+
 **Methodology:**
 * **Total Dark Volume:** Reconstructed by summing **CNMS** (ADF), **NYSE TRF**, **Nasdaq Carteret**, and **Nasdaq Chicago**.
 * **Buying Activity:** Short Volume (Market makers filling buy orders).
@@ -30,6 +35,7 @@ def fetch_daily_components(date_str):
     Fetches and combines data from ALL 4 FINRA facilities to reconstruct total volume.
     """
     base_url = "https://cdn.finra.org/equity/regsho/daily/"
+    
     # The 4 "Pipes" of Dark Pool Data
     components = [
         f"CNMSshvol{date_str}.txt",   # ADF / Consolidated NMS
@@ -81,7 +87,7 @@ if len(date_range) == 2:
         all_daily_totals = []
         current_date = start_date
         
-        # Progress Bar
+        # Progress Bar setup
         days_diff = (end_date - start_date).days + 1
         progress_bar = st.progress(0)
         day_count = 0
